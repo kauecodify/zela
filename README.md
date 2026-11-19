@@ -372,7 +372,7 @@ model PoolLowdataesc {
 - Validação de documentos
 
 ### 2. WhatsApp Business API
-- Recebimento de ocorrências via WhatsApp
+- Recebimento de ocorrências via WhatsApp > https://apps.fiesp.com.br/FiespLogin/Content/upload/startup/PITCH_1046c243-5e29-41c7-851f-c16810028d84ede61d94-8803-4570-9a0a-62ff6d500b8f.pdf
 - Envio de notificações
 
 ### 3. IBGE API
