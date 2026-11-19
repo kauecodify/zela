@@ -1,0 +1,770 @@
+version: '3.8'
+
+# Zela Nacional - Docker Compose para Desenvolvimento
+# Orquestra todos os servicos: backend, frontend, IA, banco de dados
+
+services:
+  # ============================================
+  # Banco de Dados
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: zela-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zela_user
+      POSTGRES_PASSWORD: zela_password
+      POSTGRES_DB: zela_nacional
+      POSTGRES_INITDB_ARGS: --encoding=UTF8 --data-checksums
+    ports:
+      - "5432:5432"
+    volumes:
+      - zela_postgres_data:/var/lib/postgresql/data
+      - ./infra/terraform/modules/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zela_user -d zela_nacional"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zela-network
+
+  # Redis para cache e filas
+  redis:
+    image: redis:7-alpine
+    container_name: zela-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - zela_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zela-network
+
+  # OpenSearch para busca textual
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    container_name: zela-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: true
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+      DISABLE_SECURITY_PLUGIN: true
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - zela_opensearch_data:/usr/share/opensearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    networks:
+      - zela-network
+
+  # ClickHouse para analytics
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: zela-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: zela_analytics
+      CLICKHOUSE_USER: zela_user
+      CLICKHOUSE_PASSWORD: zela_password
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - zela_clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zela-network
+
+  # ============================================
+  # Servicos de Backend (NestJS)
+  # ============================================
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: zela-auth-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      DIRECT_DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      JWT_SECRET: zela-secret-key-change-in-production
+      JWT_REFRESH_SECRET: zela-refresh-secret-change-in-production
+      JWT_EXPIRES_IN: 24h
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  routing-service:
+    build:
+      context: ./services/routing-service
+      dockerfile: Dockerfile
+    container_name: zela-routing-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      DIRECT_DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      JWT_SECRET: zela-secret-key-change-in-production
+      MATCH_API_URL: http://match-service:3003/api/match
+      ENABLE_EXTERNAL_MATCH: "true"
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      match-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  citizen-service:
+    build:
+      context: ./services/citizen-service
+      dockerfile: Dockerfile
+    container_name: zela-citizen-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:3001
+      ROUTING_SERVICE_URL: http://routing-service:3002
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3008:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  intake-service:
+    build:
+      context: ./services/intake-service
+      dockerfile: Dockerfile
+    container_name: zela-intake-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3004
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:3001
+      ROUTING_SERVICE_URL: http://routing-service:3002
+      MEDIA_SERVICE_URL: http://media-service:3005
+      WHATSAPP_WEBHOOK_SECRET: whatsapp-secret-key
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3004:3004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      routing-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  media-service:
+    build:
+      context: ./services/media-service
+      dockerfile: Dockerfile
+    container_name: zela-media-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3005
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: zela-media
+      WHISPER_MODEL: small
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  classification-service:
+    build:
+      context: ./services/classification-service
+      dockerfile: Dockerfile
+    container_name: zela-classification-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3006
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      MODEL_URL: http://ai-models:8000
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3006:3006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3006/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  workflow-service:
+    build:
+      context: ./services/workflow-service
+      dockerfile: Dockerfile
+    container_name: zela-workflow-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3007
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:3001
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3007:3007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3007/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: zela-notification-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3008
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      WHATSAPP_API_KEY: whatsapp-api-key
+      SMS_API_KEY: sms-api-key
+      EMAIL_SMTP_HOST: smtp.gmail.com
+      EMAIL_SMTP_PORT: 587
+      EMAIL_USER: zela@email.com
+      EMAIL_PASSWORD: email-password
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3009:3008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3008/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: zela-analytics-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3010
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      CLICKHOUSE_URL: http://clickhouse:8123
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3010:3010"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  billing-service:
+    build:
+      context: ./services/billing-service
+      dockerfile: Dockerfile
+    container_name: zela-billing-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3011
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      PIX_API_KEY: pix-api-key
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3011:3011"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3011/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  audit-service:
+    build:
+      context: ./services/audit-service
+      dockerfile: Dockerfile
+    container_name: zela-audit-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3012
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3012:3012"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3012/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  pool-lowdataesc-service:
+    build:
+      context: ./services/pool-lowdataesc
+      dockerfile: Dockerfile
+    container_name: zela-pool-lowdataesc
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3013
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public,pool_lowdataesc
+      REDIS_URL: redis://redis:6379
+      POOL_NAME: pool-nacional
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007
+      LOG_LEVEL: debug
+    ports:
+      - "3013:3013"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3013/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  # ============================================
+  # Servicos de IA (Python FastAPI)
+  # ============================================
+  match-service:
+    build:
+      context: ./ai/match-service
+      dockerfile: Dockerfile
+    container_name: zela-match-service
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "True"
+      PORT: 3003
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      API_KEY: zela-match-secret-change-in-production
+      JWT_SECRET: zela-secret-key-change-in-production
+      CACHE_ENABLED: "True"
+      CACHE_TTL: 3600
+      MODEL_DIR: ./models
+      USE_GPU: "False"
+      CONFIDENCE_THRESHOLD: 0.7
+      HUMAN_REVIEW_THRESHOLD: 0.6
+      MAX_INPUT_LENGTH: 10000
+      MAX_BATCH_SIZE: 100
+      CORS_ORIGINS: "['http://localhost:3000','http://localhost:3001','http://localhost:3002']"
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3003/api/health').raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  transcription-service:
+    build:
+      context: ./ai/transcription-service
+      dockerfile: Dockerfile
+    container_name: zela-transcription-service
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "True"
+      PORT: 3014
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      MODEL_DIR: ./models
+      USE_GPU: "False"
+      WHISPER_MODEL: small
+      CORS_ORIGINS: "['http://localhost:3000','http://localhost:3001','http://localhost:3002']"
+    ports:
+      - "3014:3014"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3014/api/health').raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  classification-service-ai:
+    build:
+      context: ./ai/classification-service
+      dockerfile: Dockerfile
+    container_name: zela-classification-service-ai
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: development
+      DEBUG: "True"
+      PORT: 3015
+      DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+      MODEL_DIR: ./models
+      USE_GPU: "False"
+      LLM_MODEL: llama-3.1-70b
+      CLIP_MODEL: ViT-B-32
+      CORS_ORIGINS: "['http://localhost:3000','http://localhost:3001','http://localhost:3002']"
+    ports:
+      - "3015:3015"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3015/api/health').raise_for_status()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zela-network
+
+  # ============================================
+  # Storage (MinIO para S3 compativel)
+  # ============================================
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T20-19-16Z
+    container_name: zela-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - zela_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zela-network
+
+  # ============================================
+  # API Gateway (Kong)
+  # ============================================
+  kong:
+    image: kong:3.6-alpine
+    container_name: zela-kong
+    restart: unless-stopped
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres
+      KONG_PG_USER: zela_user
+      KONG_PG_PASSWORD: zela_password
+      KONG_PG_DATABASE: zela_nacional
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - zela-network
+
+  # ============================================
+  # Frontend (Next.js)
+  # ============================================
+  portal-cidadao:
+    build:
+      context: ./apps/portal-cidadao
+      dockerfile: Dockerfile
+    container_name: zela-portal-cidadao
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_URL: http://localhost:3001
+      NEXT_PUBLIC_ROUTING_URL: http://localhost:3002
+      NEXT_PUBLIC_INTAKE_URL: http://localhost:3004
+      NEXT_PUBLIC_MEDIA_URL: http://localhost:3005
+      NEXT_PUBLIC_WHATSAPP_NUMBER: 5511999999999
+    ports:
+      - "3000:3000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      routing-service:
+        condition: service_healthy
+      intake-service:
+        condition: service_healthy
+    networks:
+      - zela-network
+
+  portal-consorcio:
+    build:
+      context: ./apps/portal-consorcio
+      dockerfile: Dockerfile
+    container_name: zela-portal-consorcio
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_URL: http://localhost:3001
+      NEXT_PUBLIC_ANALYTICS_URL: http://localhost:3010
+      NEXT_PUBLIC_ROUTING_URL: http://localhost:3002
+    ports:
+      - "3016:3000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+    networks:
+      - zela-network
+
+  portal-prefeitura:
+    build:
+      context: ./apps/portal-prefeitura
+      dockerfile: Dockerfile
+    container_name: zela-portal-prefeitura
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_URL: http://localhost:3001
+      NEXT_PUBLIC_INTAKE_URL: http://localhost:3004
+      NEXT_PUBLIC_WORKFLOW_URL: http://localhost:3007
+      NEXT_PUBLIC_NOTIFICATION_URL: http://localhost:3009
+    ports:
+      - "3017:3000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      intake-service:
+        condition: service_healthy
+      workflow-service:
+        condition: service_healthy
+    networks:
+      - zela-network
+
+  portal-nacional:
+    build:
+      context: ./apps/portal-nacional
+      dockerfile: Dockerfile
+    container_name: zela-portal-nacional
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_URL: http://localhost:3001
+      NEXT_PUBLIC_ANALYTICS_URL: http://localhost:3010
+      NEXT_PUBLIC_BILLING_URL: http://localhost:3011
+      NEXT_PUBLIC_AUDIT_URL: http://localhost:3012
+    ports:
+      - "3018:3000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      analytics-service:
+        condition: service_healthy
+      billing-service:
+        condition: service_healthy
+    networks:
+      - zela-network
+
+  crm:
+    build:
+      context: ./apps/crm
+      dockerfile: Dockerfile
+    container_name: zela-crm
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_AUTH_URL: http://localhost:3001
+      NEXT_PUBLIC_ROUTING_URL: http://localhost:3002
+      NEXT_PUBLIC_ANALYTICS_URL: http://localhost:3010
+      NEXT_PUBLIC_POOL_URL: http://localhost:3013
+    ports:
+      - "3019:3000"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      routing-service:
+        condition: service_healthy
+      pool-lowdataesc-service:
+        condition: service_healthy
+    networks:
+      - zela-network
+
+volumes:
+  zela_postgres_data:
+  zela_redis_data:
+  zela_opensearch_data:
+  zela_clickhouse_data:
+  zela_minio_data:
+
+networks:
+  zela-network:
+    driver: bridge
+    name: zela-network

@@ -1,0 +1,864 @@
+// Zela Nacional - Schema Prisma Multi-Tenant
+// PostgreSQL com isolamento por consortium_id e pool lowdataesc
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["multiSchema", "fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "pool_lowdataesc"]
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ============================================
+// POOL LOWDATAESC - Contas Segregadas
+// ============================================
+
+model PoolLowdataesc {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  consortiumId String
+  consortium  Consortium @relation(fields: [consortiumId], references: [id])
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Configuracoes de rate limit e quota
+  rateLimitPerMinute Int      @default(1000)
+  storageQuotaGB     Int      @default(100)
+  computeQuota       Int      @default(10)
+
+  // Auditoria
+  auditLogs AuditLog[]
+
+  @@map("pool_lowdataesc")
+}
+
+// ============================================
+// MULTI-TENANCY - Consorcios e Client
+// ============================================
+
+model Consortium {
+  id              String    @id @default(cuid())
+  name            String    @unique
+  shortName       String
+  cnpj            String    @unique
+  state           String
+  region          String
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Configuracoes de SLA
+  defaultSlaHours Int      @default(24)
+  maxPriorityScore Int     @default(100)
+
+  // Relacionamentos
+  municipalities Municipality[]
+  clients        Client[]
+  users          User[]
+  pool           PoolLowdataesc?
+  occurrences    Occurrence[]
+  workflows      Workflow[]
+  auditLogs      AuditLog[]
+
+  // Matriz de competencias
+  competenceMatrix CompetenceMatrix[]
+
+  @@index([state])
+  @@index([region])
+}
+
+model Municipality {
+  id           String    @id @default(cuid())
+  ibgeCode     String    @unique
+  name         String
+  state        String
+  region       String
+  population   Int
+  areaKm2      Float
+  consortiumId String
+  consortium   Consortium @relation(fields: [consortiumId], references: [id], onDelete: Cascade)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Setores censitarios IBGE
+  censusSectors CensusSector[]
+  clients       Client[]
+  occurrences   Occurrence[]
+
+  @@index([ibgeCode])
+  @@index([consortiumId, state])
+}
+
+model CensusSector {
+  id             String    @id @default(cuid())
+  ibgeCode       String
+  name           String
+  municipalityId String
+  municipality   Municipality @relation(fields: [municipalityId], references: [id], onDelete: Cascade)
+  geometry       Json
+  createdAt      DateTime  @default(now())
+
+  occurrences Occurrence[]
+
+  @@index([municipalityId, ibgeCode])
+}
+
+model Client {
+  id              String    @id @default(cuid())
+  name            String
+  clientType      ClientType
+  cnpj            String?
+  consortiumId    String
+  consortium      Consortium @relation(fields: [consortiumId], references: [id], onDelete: Cascade)
+  municipalityId  String?
+  municipality    Municipality?  @relation(fields: [municipalityId], references: [id])
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Configuracoes especificas
+  slaHours        Int      @default(24)
+  priorityWeight  Float    @default(1.0)
+
+  // Relacionamentos
+  users           User[]
+  teams           Team[]
+  occurrences     Occurrence[]
+  workflows       Workflow[]
+  competenceMatrix CompetenceMatrix[]
+
+  @@index([consortiumId, clientType])
+}
+
+enum ClientType {
+  PREFEITURA
+  CONCESSIONARIA
+  EMPRESA
+  OUTRO
+}
+
+model CompetenceMatrix {
+  id             String    @id @default(cuid())
+  consortiumId   String
+  consortium     Consortium @relation(fields: [consortiumId], references: [id], onDelete: Cascade)
+  clientId       String?
+  client         Client?    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  categoryId     String
+  category       Category    @relation(fields: [categoryId], references: [id])
+  subcategoryId  String?
+  subcategory    Subcategory? @relation(fields: [subcategoryId], references: [id])
+  isResponsible  Boolean   @default(true)
+  priorityScore  Int      @default(50)
+  slaOverride    Int?
+
+  @@unique([consortiumId, clientId, categoryId, subcategoryId])
+  @@index([consortiumId, categoryId])
+}
+
+// ============================================
+// USUARIOS E AUTENTICACAO
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  phone         String?
+  name          String
+  passwordHash  String?
+  userType      UserType
+  isActive      Boolean   @default(true)
+  lastLogin     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Tenancy
+  consortiumId  String?
+  consortium    Consortium?  @relation(fields: [consortiumId], references: [id])
+  clientId      String?
+  client        Client?      @relation(fields: [clientId], references: [id])
+  municipalityId String?
+  municipality  Municipality? @relation(fields: [municipalityId], references: [id])
+
+  // Permissoes
+  roles         Role[]
+  permissions   Permission[]
+  sessions      Session[]
+  auditLogs     AuditLog[]
+
+  // Relacionamentos
+  assignedOccurrences Occurrence[] @relation("AssignedUser")
+  resolvedOccurrences Occurrence[] @relation("ResolvedUser")
+
+  @@index([consortiumId, email])
+  @@index([clientId, email])
+}
+
+enum UserType {
+  CIDADAO
+  ADMIN_CONSORCIO
+  ADMIN_PREFEITURA
+  ADMIN_CONCESSIONARIA
+  ADMIN_NACIONAL
+  TECNICO
+  FISCAL
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  users       User[]
+  permissions Permission[]
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  resource    String
+  action      String
+  createdAt   DateTime @default(now())
+
+  roles       Role[]
+  users       User[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+// ============================================
+// OCORRENCIAS - Core do Sistema
+// ============================================
+
+model Occurrence {
+  id              String    @id @default(cuid())
+  protocol        String    @unique
+  title           String?
+  description     String?
+  status          OccurrenceStatus @default(DRAFT)
+  priority        Priority  @default(NORMAL)
+  riskLevel       RiskLevel @default(LOW)
+  categoryId      String
+  category        Category   @relation(fields: [categoryId], references: [id])
+  subcategoryId   String?
+  subcategory     Subcategory? @relation(fields: [subcategoryId], references: [id])
+
+  // Geolocalizacao
+  latitude        Float?
+  longitude       Float?
+  address         String?
+  referencePoint  String?
+  censusSectorId  String?
+  censusSector    CensusSector? @relation(fields: [censusSectorId], references: [id])
+  municipalityId  String
+  municipality    Municipality @relation(fields: [municipalityId], references: [id])
+
+  // Tenancy
+  consortiumId    String
+  consortium      Consortium @relation(fields: [consortiumId], references: [id])
+  clientId        String?
+  client          Client?    @relation(fields: [clientId], references: [id])
+
+  // Roteamento
+  routedBy        RoutingSource @default(AUTO)
+  confidenceScore Float?
+  explanation     String?
+
+  // Workflow
+  workflowId      String?
+  workflow        Workflow?  @relation(fields: [workflowId], references: [id])
+  workflowState   String?
+
+  // Atribuicao
+  assignedUserId  String?
+  assignedUser    User?      @relation("AssignedUser", fields: [assignedUserId], references: [id])
+  assignedTeamId  String?
+  assignedTeam    Team?      @relation(fields: [assignedTeamId], references: [id])
+
+  // Resolucao
+  resolvedUserId  String?
+  resolvedUser    User?      @relation("ResolvedUser", fields: [resolvedUserId], references: [id])
+  resolvedAt      DateTime?
+  resolutionNote  String?
+  resolutionPhoto String?
+
+  // SLA
+  slaDeadline     DateTime?
+  slaHours        Int?
+
+  // Midias
+  medias          Media[]
+  attachments     Attachment[]
+
+  // Feedback
+  citizenFeedback Feedback?
+  reopenCount     Int        @default(0)
+
+  // Auditoria
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Deduplicacao
+  dedupGroupId    String?
+  isDuplicate     Boolean   @default(false)
+
+  // Pool
+  poolId          String?
+  pool            PoolLowdataesc? @relation(fields: [poolId], references: [id])
+
+  // Indexes
+  @@index([protocol])
+  @@index([consortiumId, status])
+  @@index([consortiumId, priority])
+  @@index([municipalityId, status])
+  @@index([clientId, status])
+  @@index([categoryId, municipalityId])
+  @@index([latitude, longitude])
+  @@index([createdAt])
+  @@index([slaDeadline])
+  @@index([dedupGroupId])
+  @@fulltext([title, description])
+}
+
+enum OccurrenceStatus {
+  DRAFT
+  PENDING
+  IN_PROGRESS
+  RESOLVED
+  REOPENED
+  CANCELLED
+  ARCHIVED
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum RiskLevel {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RoutingSource {
+  AUTO
+  MANUAL
+  WHATSAPP
+  SMS
+  WEB
+  API
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  icon        String?
+  color       String?
+  isActive    Boolean  @default(true)
+  parentId    String?
+  parent      Category? @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryToCategory")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subcategories Subcategory[]
+  occurrences  Occurrence[]
+  competenceMatrix CompetenceMatrix[]
+
+  @@index([code])
+}
+
+model Subcategory {
+  id          String   @id @default(cuid())
+  name        String
+  code        String
+  description String?
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  occurrences  Occurrence[]
+  competenceMatrix CompetenceMatrix[]
+
+  @@unique([categoryId, code])
+  @@index([categoryId])
+}
+
+model Media {
+  id           String    @id @default(cuid())
+  occurrenceId String
+  occurrence   Occurrence @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  mediaType    MediaType
+  url          String
+  thumbnailUrl String?
+  fileName     String
+  fileSize     Int
+  mimeType     String
+  metadata     Json?
+  createdAt    DateTime  @default(now())
+
+  // Processamento
+  transcriptionId String?
+  transcription  Transcription? @relation(fields: [transcriptionId], references: [id])
+  classificationId String?
+  classification Classification? @relation(fields: [classificationId], references: [id])
+
+  @@index([occurrenceId])
+}
+
+enum MediaType {
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+}
+
+model Attachment {
+  id           String    @id @default(cuid())
+  occurrenceId String
+  occurrence   Occurrence @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  fileName     String
+  url          String
+  mimeType     String
+  fileSize     Int
+  createdAt    DateTime  @default(now())
+
+  @@index([occurrenceId])
+}
+
+// ============================================
+// IA - Transcricao e Classificacao
+// ============================================
+
+model Transcription {
+  id        String   @id @default(cuid())
+  mediaId   String   @unique
+  media     Media    @relation(fields: [mediaId], references: [id])
+  text      String
+  language  String   @default("pt-BR")
+  model     String   @default("whisper-large-v3")
+  confidence Float?
+  duration  Float?
+  createdAt DateTime @default(now())
+
+  @@index([mediaId])
+}
+
+model Classification {
+  id        String   @id @default(cuid())
+  mediaId   String   @unique
+  media     Media    @relation(fields: [mediaId], references: [id])
+  categoryId String
+  category  Category @relation(fields: [categoryId], references: [id])
+  subcategoryId String?
+  subcategory Subcategory? @relation(fields: [subcategoryId], references: [id])
+  confidence Float
+  model     String   @default("llama-3.1-70b")
+  explanation String?
+  createdAt DateTime @default(now())
+
+  @@index([mediaId])
+}
+
+// ============================================
+// FEEDBACK E AVALIACAO
+// ============================================
+
+model Feedback {
+  id           String    @id @default(cuid())
+  occurrenceId String    @unique
+  occurrence   Occurrence @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  citizenId    String?
+  rating       Int
+  comment      String?
+  isResolved   Boolean
+  createdAt    DateTime  @default(now())
+
+  @@index([occurrenceId])
+  @@index([rating])
+}
+
+// ============================================
+// WORKFLOW E NOTIFICACOES
+// ============================================
+
+model Workflow {
+  id           String    @id @default(cuid())
+  name         String
+  description  String?
+  definition   Json
+  version      Int       @default(1)
+  isActive     Boolean   @default(true)
+  consortiumId String?
+  consortium   Consortium? @relation(fields: [consortiumId], references: [id])
+  clientId     String?
+  client       Client?    @relation(fields: [clientId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  occurrences Occurrence[]
+  steps       WorkflowStep[]
+
+  @@index([consortiumId, name])
+}
+
+model WorkflowStep {
+  id         String   @id @default(cuid())
+  workflowId String
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  name       String
+  stepType   String
+  order      Int
+  config     Json?
+  createdAt  DateTime @default(now())
+
+  @@index([workflowId, order])
+}
+
+model Notification {
+  id           String    @id @default(cuid())
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id])
+  teamId       String?
+  team         Team?     @relation(fields: [teamId], references: [id])
+  occurrenceId String?
+  occurrence   Occurrence? @relation(fields: [occurrenceId], references: [id])
+  title        String
+  message      String
+  channel      NotificationChannel
+  status       NotificationStatus @default(PENDING)
+  metadata     Json?
+  scheduledAt  DateTime?
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, status])
+  @@index([occurrenceId])
+  @@index([scheduledAt])
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  PUSH
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+// ============================================
+// EQUIPES E DESPACHO
+// ============================================
+
+model Team {
+  id           String    @id @default(cuid())
+  name         String
+  description  String?
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  users        User[]
+  occurrences  Occurrence[]
+  notifications Notification[]
+  checkIns     CheckIn[]
+
+  @@index([clientId, name])
+}
+
+model CheckIn {
+  id        String   @id @default(cuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  occurrenceId String
+  occurrence Occurrence @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
+  latitude  Float
+  longitude Float
+  timestamp DateTime @default(now())
+
+  @@index([occurrenceId])
+  @@index([teamId, timestamp])
+}
+
+// ============================================
+// ANALYTICS E RELATORIOS
+// ============================================
+
+model AnalyticsEvent {
+  id           String    @id @default(cuid())
+  occurrenceId String?
+  userId       String?
+  eventType    AnalyticsEventType
+  metadata     Json
+  timestamp    DateTime  @default(now())
+
+  @@index([eventType, timestamp])
+  @@index([occurrenceId])
+}
+
+enum AnalyticsEventType {
+  OCCURRENCE_CREATED
+  OCCURRENCE_ASSIGNED
+  OCCURRENCE_RESOLVED
+  OCCURRENCE_REOPENED
+  USER_LOGIN
+  NOTIFICATION_SENT
+  WORKFLOW_STEP_COMPLETED
+  SLA_BREACHED
+}
+
+model Report {
+  id        String   @id @default(cuid())
+  name      String
+  reportType ReportType
+  query     Json
+  schedule  String?
+  parameters Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  executions ReportExecution[]
+
+  @@index([reportType])
+}
+
+enum ReportType {
+  KPI_DASHBOARD
+  SLA_COMPLIANCE
+  EQUITY_MONITOR
+  CATEGORY_DISTRIBUTION
+  TEAM_PERFORMANCE
+}
+
+model ReportExecution {
+  id        String   @id @default(cuid())
+  reportId  String
+  report    Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  status    ReportExecutionStatus @default(RUNNING)
+  data      Json?
+  fileUrl   String?
+  startedAt DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([reportId, status])
+}
+
+enum ReportExecutionStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+// ============================================
+// BILLING E COBRANCA
+// ============================================
+
+model BillingCycle {
+  id           String    @id @default(cuid())
+  consortiumId String
+  consortium   Consortium @relation(fields: [consortiumId], references: [id])
+  startDate    DateTime
+  endDate      DateTime
+  status       BillingStatus @default(DRAFT)
+  totalAmount  Float     @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  invoices Invoice[]
+
+  @@index([consortiumId, startDate])
+}
+
+enum BillingStatus {
+  DRAFT
+  GENERATED
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id              String    @id @default(cuid())
+  billingCycleId  String
+  billingCycle    BillingCycle @relation(fields: [billingCycleId], references: [id], onDelete: Cascade)
+  clientId        String
+  client          Client    @relation(fields: [clientId], references: [id])
+  amount          Float
+  dueDate         DateTime
+  status          InvoiceStatus @default(PENDING)
+  paymentMethod   PaymentMethod?
+  paymentDate     DateTime?
+  pixTransactionId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  items InvoiceItem[]
+
+  @@index([clientId, status])
+  @@index([billingCycleId])
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  PIX
+  BOLETO
+  TRANSFERENCIA
+}
+
+model InvoiceItem {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description String
+  quantity   Int
+  unitPrice  Float
+  total      Float
+
+  @@index([invoiceId])
+}
+
+// ============================================
+// AUDITORIA - Imutavel
+// ============================================
+
+model AuditLog {
+  id           String    @id @default(cuid())
+  action       String
+  resource     String
+  resourceId   String
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id])
+  consortiumId String?
+  consortium   Consortium? @relation(fields: [consortiumId], references: [id])
+  poolId       String?
+  pool         PoolLowdataesc? @relation(fields: [poolId], references: [id])
+  oldValue     Json?
+  newValue     Json?
+  metadata     Json?
+  ipAddress    String?
+  userAgent    String?
+  timestamp    DateTime  @default(now())
+
+  // Para decisões da IA
+  aiModel      String?
+  aiVersion    String?
+  confidence   Float?
+  explanation  String?
+
+  @@index([resource, resourceId])
+  @@index([userId, timestamp])
+  @@index([consortiumId, timestamp])
+  @@index([timestamp])
+}
+
+// ============================================
+// INTEGRACOES EXTERNAS
+// ============================================
+
+model ExternalIntegration {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  provider    IntegrationProvider
+  config      Json
+  isActive    Boolean   @default(false)
+  lastSync    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  syncLogs SyncLog[]
+
+  @@index([provider, isActive])
+}
+
+enum IntegrationProvider {
+  GOV_BR
+  WHATSAPP_BUSINESS
+  IBGE
+  OPENSTREETMAP
+  SABESP
+  ENERGISA
+  PIX
+  TRANSPARENCIA_BRASIL
+  CGU
+}
+
+model SyncLog {
+  id                  String    @id @default(cuid())
+  integrationId       String
+  integration         ExternalIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  direction           SyncDirection
+  entityType          String
+  recordsProcessed    Int
+  recordsSuccess      Int
+  recordsFailed       Int
+  status              SyncStatus
+  errorMessage        String?
+  startedAt           DateTime  @default(now())
+  completedAt         DateTime?
+
+  @@index([integrationId, startedAt])
+  @@index([status])
+}
+
+enum SyncDirection {
+  INBOUND
+  OUTBOUND
+  BIDIRECTIONAL
+}
+
+enum SyncStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}

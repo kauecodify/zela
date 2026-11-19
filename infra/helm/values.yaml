@@ -1,0 +1,287 @@
+# Zela Nacional - Values de Configuracao
+
+# Configuracoes globais
+global:
+  environment: production
+  region: sa-east-1
+  
+  # Imagens
+  imageRegistry: ""
+  imagePullSecrets: []
+  
+  # Recursos
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# PostgreSQL
+postgres:
+  enabled: true
+  auth:
+    username: zela_user
+    password: zela_password
+    database: zela_nacional
+  primary:
+    persistence:
+      enabled: true
+      size: 100Gi
+      storageClass: gp3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+
+# Redis
+redis:
+  enabled: true
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: gp3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# OpenSearch
+opensearch:
+  enabled: true
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# ClickHouse
+clickhouse:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 100Gi
+    storageClass: gp3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# Auth Service
+auth-service:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository:ela/auth-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3001
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: auth.zela.gov.br
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - auth.zela.gov.br
+  env:
+    NODE_ENV: production
+    DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+    JWT_SECRET: zela-secret-key-change-in-production
+    JWT_REFRESH_SECRET: zela-refresh-secret-change-in-production
+    CORS_ORIGIN: https://zela.gov.br
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Routing Service
+routing-service:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: zela/routing-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3002
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: routing.zela.gov.br
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - routing.zela.gov.br
+  env:
+    NODE_ENV: production
+    DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+    MATCH_API_URL: http://match-service:3003/api/match
+    ENABLE_EXTERNAL_MATCH: "true"
+    JWT_SECRET: zela-secret-key-change-in-production
+    CORS_ORIGIN: https://zela.gov.br
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# MATCH Service (AI)
+match-service:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: zela/match-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3003
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: match.zela.gov.br
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - match.zela.gov.br
+  env:
+    ENVIRONMENT: production
+    DATABASE_URL: postgresql://zela_user:zela_password@postgres:5432/zela_nacional?schema=public
+    API_KEY: zela-match-secret-change-in-production
+    JWT_SECRET: zela-secret-key-change-in-production
+    CACHE_ENABLED: "true"
+    CONFIDENCE_THRESHOLD: 0.7
+    MODEL_DIR: /app/models
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+# CRM
+crm:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: zela/crm
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: crm.zela.gov.br
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - crm.zela.gov.br
+  env:
+    NODE_ENV: production
+    NEXT_PUBLIC_API_URL: https://api.zela.gov.br
+    NEXT_PUBLIC_AUTH_URL: https://auth.zela.gov.br
+    NEXT_PUBLIC_ROUTING_URL: https://routing.zela.gov.br
+    NEXT_PUBLIC_ANALYTICS_URL: https://analytics.zela.gov.br
+    NEXT_PUBLIC_POOL_URL: https://pool.zela.gov.br
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Kong API Gateway
+kong:
+  enabled: true
+  replicaCount: 2
+  admin:
+    enabled: true
+    type: ClusterIP
+    port: 8001
+  proxy:
+    type: LoadBalancer
+    port: 8000
+  env:
+    KONG_DATABASE: postgres
+    KONG_PG_HOST: postgres
+    KONG_PG_USER: zela_user
+    KONG_PG_PASSWORD: zela_password
+    KONG_PG_DATABASE: zela_nacional
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Observabilidade
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    service:
+      type: ClusterIP
+      port: 9090
+  grafana:
+    enabled: true
+    service:
+      type: ClusterIP
+      port: 3000
+    ingress:
+      enabled: true
+      hosts:
+        - host: grafana.zela.gov.br
+          paths:
+            - path: /
+              pathType: Prefix
+  loki:
+    enabled: true
+    service:
+      type: ClusterIP
+      port: 3100

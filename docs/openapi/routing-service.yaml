@@ -1,0 +1,1185 @@
+openapi: 3.1.0
+info:
+  title: Zela Nacional - Routing Service (MATCH)
+  description: |
+    Servico de Roteamento Inteligente de Ocorrencias para o Zela Nacional.
+    
+    O MATCH Engine usa uma combinacao de regras, heurísticas e modelos de ML para determinar:
+    - Qual consorcio deve tratar a ocorrencia
+    - Qual client (prefeitura ou concessionaria) deve tratar
+    - Qual a prioridade
+    - Qual o SLA
+    - Confianca da decisao
+  version: 1.0.0
+  contact:
+    name: Zela Nacional Team
+    email: suporte@zela.gov.br
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3002/api
+    description: Desenvolvimento Local
+  - url: http://routing-service:3002/api
+    description: Docker Interno
+  - url: https://routing.zela.gov.br/api
+    description: Producao
+
+tags:
+  - name: routing
+    description: Operacoes de roteamento de ocorrencias
+  - name: consortium
+    description: Operacoes relacionadas a consorcios
+  - name: client
+    description: Operacoes relacionadas a clients
+  - name: occurrence
+    description: Operacoes relacionadas a ocorrencias
+  - name: health
+    description: Health checks
+
+security:
+  - bearerAuth: []
+
+paths:
+  /routing/route:
+    post:
+      tags:
+        - routing
+      summary: Rotear ocorrencia
+      description: |
+        Determina o consorcio e client responsaveis por uma ocorrencia usando o MATCH Engine.
+        
+        O endpoint recebe os dados da ocorrencia e retorna:
+        - consortium_id: ID do consorcio responsavel
+        - client_id: ID do client responsavel
+        - priority_score: Score de prioridade (0-100)
+        - sla_hours: Horas para SLA
+        - confidence: Confianca da decisao (0-1)
+        - explanation: Explicacao da decisao
+      operationId: routeOccurrence
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteOccurrenceRequest'
+      responses:
+        '200':
+          description: Ocorrencia roteada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteOccurrenceResponse'
+        '400':
+          description: Requisicao invalida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Nao autorizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Recurso nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Erro interno do servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /routing/batch-route:
+    post:
+      tags:
+        - routing
+      summary: Rotear multiplas ocorrencias em batch
+      description: Processa multiplas ocorrencias em lote para melhor performance.
+      operationId: routeBatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteBatchRequest'
+      responses:
+        '200':
+          description: Batch processado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteBatchResponse'
+        '400':
+          description: Requisicao invalida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Erro interno do servidor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /routing/decision/{occurrenceId}:
+    get:
+      tags:
+        - routing
+      summary: Obter decisao de roteamento
+      description: Retorna a decisao de roteamento para uma ocorrencia especifica.
+      operationId: getRoutingDecision
+      parameters:
+        - $ref: '#/components/parameters/OccurrenceId'
+      responses:
+        '200':
+          description: Decisao de roteamento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingDecision'
+        '404':
+          description: Ocorrencia nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /routing/history/{occurrenceId}:
+    get:
+      tags:
+        - routing
+      summary: Obter historico de roteamento
+      description: Retorna o historico de decisões de roteamento para uma ocorrencia.
+      operationId: getRoutingHistory
+      parameters:
+        - $ref: '#/components/parameters/OccurrenceId'
+      responses:
+        '200':
+          description: Historico de roteamento
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoutingDecision'
+        '404':
+          description: Ocorrencia nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /routing/stats:
+    get:
+      tags:
+        - routing
+      summary: Obter estatisticas de roteamento
+      description: Retorna estatisticas de roteamento para um consortium ou periodo.
+      operationId: getRoutingStats
+      parameters:
+        - name: consortiumId
+          in: query
+          description: ID do consortium (opcional)
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          description: Data inicial (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+        - name: endDate
+          in: query
+          description: Data final (ISO 8601)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Estatisticas de roteamento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutingStats'
+
+  /routing/reassign/{occurrenceId}:
+    post:
+      tags:
+        - routing
+      summary: Reatribuir ocorrencia
+      description: Reatribuir uma ocorrencia para outro client ou consortium.
+      operationId: reassignOccurrence
+      parameters:
+        - $ref: '#/components/parameters/OccurrenceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReassignRequest'
+      responses:
+        '200':
+          description: Ocorrencia reatribuida com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReassignResponse'
+        '400':
+          description: Requisicao invalida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Ocorrencia nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /consortium:
+    get:
+      tags:
+        - consortium
+      summary: Listar consorcios
+      description: Retorna a lista de consorcios cadastrados.
+      operationId: listConsortia
+      parameters:
+        - name: page
+          in: query
+          description: Numero da pagina
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Quantidade por pagina
+          schema:
+            type: integer
+            default: 10
+        - name: state
+          in: query
+          description: Filtrar por estado
+          schema:
+            type: string
+        - name: region
+          in: query
+          description: Filtrar por regiao
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de consorcios
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsortiumListResponse'
+
+  /consortium/{consortiumId}:
+    get:
+      tags:
+        - consortium
+      summary: Obter consortium por ID
+      description: Retorna os dados de um consortium especifico.
+      operationId: getConsortium
+      parameters:
+        - $ref: '#/components/parameters/ConsortiumId'
+      responses:
+        '200':
+          description: Dados do consortium
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consortium'
+        '404':
+          description: Consortium nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /consortium/{consortiumId}/clients:
+    get:
+      tags:
+        - consortium
+      summary: Listar clients de um consortium
+      description: Retorna a lista de clients (prefeituras e concessionarias) de um consortium.
+      operationId: listConsortiumClients
+      parameters:
+        - $ref: '#/components/parameters/ConsortiumId'
+        - name: page
+          in: query
+          description: Numero da pagina
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Quantidade por pagina
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Lista de clients
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientListResponse'
+
+  /client:
+    get:
+      tags:
+        - client
+      summary: Listar clients
+      description: Retorna a lista de clients cadastrados.
+      operationId: listClients
+      parameters:
+        - name: page
+          in: query
+          description: Numero da pagina
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Quantidade por pagina
+          schema:
+            type: integer
+            default: 10
+        - name: consortiumId
+          in: query
+          description: Filtrar por consortium
+          schema:
+            type: string
+        - name: clientType
+          in: query
+          description: Filtrar por tipo de client
+          schema:
+            $ref: '#/components/schemas/ClientType'
+      responses:
+        '200':
+          description: Lista de clients
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientListResponse'
+
+  /client/{clientId}:
+    get:
+      tags:
+        - client
+      summary: Obter client por ID
+      description: Retorna os dados de um client especifico.
+      operationId: getClient
+      parameters:
+        - name: clientId
+          in: path
+          description: ID do client
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dados do client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+        '404':
+          description: Client nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /client/{clientId}/competence:
+    get:
+      tags:
+        - client
+      summary: Obter matriz de competencia
+      description: Retorna a matriz de competencias de um client.
+      operationId: getClientCompetence
+      parameters:
+        - name: clientId
+          in: path
+          description: ID do client
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matriz de competencias
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CompetenceMatrix'
+
+  /occurrence:
+    get:
+      tags:
+        - occurrence
+      summary: Listar ocorrencias
+      description: Retorna a lista de ocorrencias.
+      operationId: listOccurrences
+      parameters:
+        - name: page
+          in: query
+          description: Numero da pagina
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Quantidade por pagina
+          schema:
+            type: integer
+            default: 10
+        - name: consortiumId
+          in: query
+          description: Filtrar por consortium
+          schema:
+            type: string
+        - name: clientId
+          in: query
+          description: Filtrar por client
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filtrar por status
+          schema:
+            $ref: '#/components/schemas/OccurrenceStatus'
+        - name: categoryId
+          in: query
+          description: Filtrar por categoria
+          schema:
+            type: string
+        - name: priority
+          in: query
+          description: Filtrar por prioridade
+          schema:
+            $ref: '#/components/schemas/Priority'
+      responses:
+        '200':
+          description: Lista de ocorrencias
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OccurrenceListResponse'
+
+  /occurrence/{occurrenceId}:
+    get:
+      tags:
+        - occurrence
+      summary: Obter ocorrencia por ID
+      description: Retorna os dados de uma ocorrencia especifica.
+      operationId: getOccurrence
+      parameters:
+        - $ref: '#/components/parameters/OccurrenceId'
+      responses:
+        '200':
+          description: Dados da ocorrencia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Occurrence'
+        '404':
+          description: Ocorrencia nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health:
+    get:
+      tags:
+        - health
+      summary: Health check
+      description: Verifica se o servico esta funcionando corretamente.
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Servico funcionando
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token JWT para autenticacao
+
+  parameters:
+    ConsortiumId:
+      name: consortiumId
+      in: path
+      description: ID do consortium
+      required: true
+      schema:
+        type: string
+
+    OccurrenceId:
+      name: occurrenceId
+      in: path
+      description: ID da ocorrencia
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    # Requests
+    RouteOccurrenceRequest:
+      type: object
+      required:
+        - consortiumId
+        - categoryId
+      properties:
+        occurrenceId:
+          type: string
+          description: ID da ocorrencia (opcional para atualizacao)
+        consortiumId:
+          type: string
+          description: ID do consortium
+          example: cio-sp
+        categoryId:
+          type: string
+          description: ID da categoria
+          example: BURACO
+        subcategoryId:
+          type: string
+          description: ID da subcategoria
+          example: GRANDE
+        title:
+          type: string
+          description: Titulo da ocorrencia
+          example: Buraco na Rua das Flores
+        description:
+          type: string
+          description: Descricao da ocorrencia
+          example: Buraco grande na Rua das Flores, 123
+        latitude:
+          type: number
+          format: float
+          description: Latitude
+          example: -22.1234
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          format: float
+          description: Longitude
+          example: -51.3456
+          minimum: -180
+          maximum: 180
+        address:
+          type: string
+          description: Endereco
+          example: Rua das Flores, 123, Centro
+        municipalityId:
+          type: string
+          description: ID do municipio
+          example: 3509502-cio-sp
+        riskLevel:
+          $ref: '#/components/schemas/RiskLevel'
+        createdBy:
+          type: string
+          description: ID do usuario que criou
+          example: user-123
+
+    RouteBatchRequest:
+      type: object
+      required:
+        - occurrences
+      properties:
+        occurrences:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteOccurrenceRequest'
+          minItems: 1
+          maxItems: 100
+
+    ReassignRequest:
+      type: object
+      properties:
+        consortiumId:
+          type: string
+          description: Novo consortium ID (opcional)
+        clientId:
+          type: string
+          description: Novo client ID (opcional)
+        reason:
+          type: string
+          description: Motivo da reatribuicao
+          example: Client solicitou reatribuicao
+
+    # Responses
+    RouteOccurrenceResponse:
+      type: object
+      required:
+        - consortiumId
+        - clientId
+        - priorityScore
+        - slaHours
+        - confidence
+        - needsHumanReview
+        - explanation
+        - occurrence
+      properties:
+        consortiumId:
+          type: string
+          description: ID do consortium responsavel
+        clientId:
+          type: string
+          description: ID do client responsavel
+        priorityScore:
+          type: integer
+          description: Score de prioridade (0-100)
+          minimum: 0
+          maximum: 100
+        slaHours:
+          type: integer
+          description: Horas para SLA
+          minimum: 1
+        confidence:
+          type: number
+          format: float
+          description: Confianca da decisao (0-1)
+          minimum: 0
+          maximum: 1
+        needsHumanReview:
+          type: boolean
+          description: Precisa de revisao humana
+        explanation:
+          type: string
+          description: Explicacao da decisao
+        modelVersion:
+          type: string
+          description: Versao do modelo
+          example: MATCH-v1.0
+        processingTimeMs:
+          type: number
+          format: float
+          description: Tempo de processamento em ms
+        reincidenceScore:
+          type: number
+          format: float
+          description: Score de reincidencia (0-1)
+        currentLoad:
+          type: integer
+          description: Carga atual do client
+        decisionTimestamp:
+          type: string
+          format: date-time
+          description: Timestamp da decisao
+        occurrence:
+          $ref: '#/components/schemas/Occurrence'
+
+    RouteBatchResponse:
+      type: object
+      required:
+        - results
+        - totalProcessed
+        - totalSuccess
+        - totalFailed
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteOccurrenceResponse'
+        totalProcessed:
+          type: integer
+          description: Total de ocorrencias processadas
+        totalSuccess:
+          type: integer
+          description: Total de ocorrencias processadas com sucesso
+        totalFailed:
+          type: integer
+          description: Total de ocorrencias com erro
+        errors:
+          type: array
+          items:
+            type: string
+          description: Lista de erros
+
+    RoutingDecision:
+      type: object
+      required:
+        - consortiumId
+        - clientId
+        - priorityScore
+        - slaHours
+        - confidence
+        - needsHumanReview
+        - explanation
+        - timestamp
+      properties:
+        consortiumId:
+          type: string
+        clientId:
+          type: string
+        priorityScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        slaHours:
+          type: integer
+          minimum: 1
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        needsHumanReview:
+          type: boolean
+        explanation:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    RoutingStats:
+      type: object
+      properties:
+        totalRouted:
+          type: integer
+          description: Total de ocorrencias roteadas
+        autoRouted:
+          type: integer
+          description: Total de ocorrencias roteadas automaticamente
+        manualRouted:
+          type: integer
+          description: Total de ocorrencias roteadas manualmente
+        avgConfidence:
+          type: number
+          format: float
+          description: Media de confianca
+        humanReviews:
+          type: integer
+          description: Total de revisoes humanas
+        byConsortium:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ConsortiumStats'
+        byClient:
+          type: object
+          additionalProperties:
+            type: integer
+        byCategory:
+          type: object
+          additionalProperties:
+            type: integer
+
+    ConsortiumStats:
+      type: object
+      properties:
+        totalRouted:
+          type: integer
+        avgConfidence:
+          type: number
+          format: float
+        avgSlaHours:
+          type: number
+          format: float
+
+    ReassignResponse:
+      type: object
+      required:
+        - message
+        - occurrence
+      properties:
+        message:
+          type: string
+          example: Occurrence reassigned successfully
+        occurrence:
+          $ref: '#/components/schemas/Occurrence'
+
+    # Entidades
+    Consortium:
+      type: object
+      required:
+        - id
+        - name
+        - shortName
+        - cnpj
+        - state
+        - region
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: string
+          example: cio-sp
+        name:
+          type: string
+          example: Consorcio Intermunicipal do Oeste Paulista
+        shortName:
+          type: string
+          example: CIOP
+        cnpj:
+          type: string
+          example: 04.347.777/0001-00
+        state:
+          type: string
+          example: SP
+        region:
+          type: string
+          example: Sudeste
+        isActive:
+          type: boolean
+          example: true
+        defaultSlaHours:
+          type: integer
+          example: 24
+        maxPriorityScore:
+          type: integer
+          example: 100
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Client:
+      type: object
+      required:
+        - id
+        - name
+        - clientType
+        - consortiumId
+        - isActive
+        - createdAt
+      properties:
+        id:
+          type: string
+          example: prefeitura-pp
+        name:
+          type: string
+          example: Prefeitura de Presidente Prudente
+        clientType:
+          $ref: '#/components/schemas/ClientType'
+        cnpj:
+          type: string
+          example: 45.345.678/0001-00
+        consortiumId:
+          type: string
+          example: cio-sp
+        municipalityId:
+          type: string
+          example: 3509502-cio-sp
+        isActive:
+          type: boolean
+          example: true
+        slaHours:
+          type: integer
+          example: 12
+        priorityWeight:
+          type: number
+          format: float
+          example: 1.5
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CompetenceMatrix:
+      type: object
+      required:
+        - id
+        - consortiumId
+        - clientId
+        - categoryId
+        - isResponsible
+        - priorityScore
+      properties:
+        id:
+          type: string
+        consortiumId:
+          type: string
+        clientId:
+          type: string
+        categoryId:
+          type: string
+        subcategoryId:
+          type: string
+        isResponsible:
+          type: boolean
+          example: true
+        priorityScore:
+          type: integer
+          example: 50
+          minimum: 0
+          maximum: 100
+        slaOverride:
+          type: integer
+          example: 6
+
+    Occurrence:
+      type: object
+      required:
+        - id
+        - protocol
+        - status
+        - priority
+        - categoryId
+        - municipalityId
+        - consortiumId
+        - createdAt
+      properties:
+        id:
+          type: string
+        protocol:
+          type: string
+          example: CIOP-2024-0001
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/OccurrenceStatus'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        riskLevel:
+          $ref: '#/components/schemas/RiskLevel'
+        categoryId:
+          type: string
+        subcategoryId:
+          type: string
+        latitude:
+          type: number
+          format: float
+        longitude:
+          type: number
+          format: float
+        address:
+          type: string
+        referencePoint:
+          type: string
+        censusSectorId:
+          type: string
+        municipalityId:
+          type: string
+        consortiumId:
+          type: string
+        clientId:
+          type: string
+        routedBy:
+          $ref: '#/components/schemas/RoutingSource'
+        confidenceScore:
+          type: number
+          format: float
+        explanation:
+          type: string
+        workflowId:
+          type: string
+        workflowState:
+          type: string
+        assignedUserId:
+          type: string
+        assignedTeamId:
+          type: string
+        resolvedUserId:
+          type: string
+        resolvedAt:
+          type: string
+          format: date-time
+        resolutionNote:
+          type: string
+        resolutionPhoto:
+          type: string
+        slaHours:
+          type: integer
+        slaDeadline:
+          type: string
+          format: date-time
+        reopenCount:
+          type: integer
+          example: 0
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        poolId:
+          type: string
+          description: ID do pool lowdataesc
+
+    # List Responses
+    ConsortiumListResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Consortium'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    ClientListResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Client'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    OccurrenceListResponse:
+      type: object
+      required:
+        - data
+        - meta
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Occurrence'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    PaginationMeta:
+      type: object
+      required:
+        - total
+        - page
+        - limit
+        - totalPages
+      properties:
+        total:
+          type: integer
+          description: Total de itens
+        page:
+          type: integer
+          description: Pagina atual
+        limit:
+          type: integer
+          description: Itens por pagina
+        totalPages:
+          type: integer
+          description: Total de paginas
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - version
+      properties:
+        status:
+          type: string
+          example: healthy
+        version:
+          type: string
+          example: 1.0.0
+        dependencies:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+              details:
+                type: string
+        metrics:
+          type: object
+          additionalProperties: true
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Tipo do erro
+          example: ValidationError
+        message:
+          type: string
+          description: Mensagem de erro
+          example: Invalid input data
+        details:
+          type: object
+          description: Detalhes do erro
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp do erro
+
+    # Enums
+    RiskLevel:
+      type: string
+      enum:
+        - CRITICAL
+        - HIGH
+        - MEDIUM
+        - LOW
+      default: LOW
+
+    Priority:
+      type: string
+      enum:
+        - CRITICAL
+        - HIGH
+        - NORMAL
+        - LOW
+      default: NORMAL
+
+    OccurrenceStatus:
+      type: string
+      enum:
+        - DRAFT
+        - PENDING
+        - IN_PROGRESS
+        - RESOLVED
+        - REOPENED
+        - CANCELLED
+        - ARCHIVED
+      default: PENDING
+
+    ClientType:
+      type: string
+      enum:
+        - PREFEITURA
+        - CONCESSIONARIA
+        - EMPRESA
+        - OUTRO
+      default: PREFEITURA
+
+    RoutingSource:
+      type: string
+      enum:
+        - AUTO
+        - MANUAL
+        - WHATSAPP
+        - SMS
+        - WEB
+        - API
+      default: AUTO

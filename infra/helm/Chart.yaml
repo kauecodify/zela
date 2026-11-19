@@ -1,0 +1,62 @@
+apiVersion: v2
+name: zela-nacional
+version: 1.0.0
+appVersion: 1.0.0
+description: Zela Nacional - Sistema de Zeladoria Urbana Compartilhada via IA - Pré-Seed R$ 300M B2G
+type: application
+
+keywords:
+  - zeladoria
+  - urbana
+  - ia
+  - b2g
+  - governo
+  - saas
+  - smart-cities
+
+home: https://zela.gov.br
+deprecated: false
+
+maintainers:
+  - name: Zela Nacional Team
+    email: suporte@zela.gov.br
+
+sources:
+  - https://github.com/kauecodify/zela
+
+# Licenças: AGPL 3.0, BSD 3-Clause, Claude 3.0
+# Pré-Seed: R$ 300.000.000,00 - Venda Imediata B2G
+
+dependencies:
+  - name: postgres
+    version: 1.0.0
+    repository: file://./charts/postgres
+    condition: postgres.enabled
+  - name: redis
+    version: 1.0.0
+    repository: file://./charts/redis
+    condition: redis.enabled
+  - name: opensearch
+    version: 1.0.0
+    repository: file://./charts/opensearch
+    condition: opensearch.enabled
+  - name: clickhouse
+    version: 1.0.0
+    repository: file://./charts/clickhouse
+    condition: clickhouse.enabled
+  - name: auth-service
+    version: 1.0.0
+    repository: file://./charts/auth-service
+    condition: auth-service.enabled
+  - name: routing-service
+    version: 1.0.0
+    repository: file://./charts/routing-service
+    condition: routing-service.enabled
+  - name: match-service
+    version: 1.0.0
+    repository: file://./charts/match-service
+    condition: match-service.enabled
+  - name: crm
+    version: 1.0.0
+    repository: file://./charts/crm
+    condition: crm.enabled
